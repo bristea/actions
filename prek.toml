@@ -1,6 +1,6 @@
 #:schema https://raw.githubusercontent.com/j178/prek/refs/heads/master/prek.schema.json
 #:tombi schema.strict = false
-# cspell: ignore biomejs prek tombi
+# cspell: ignore biomejs prek tombi renovaterc
 
 [[repos]]
 repo = "https://github.com/astral-sh/uv-pre-commit"
@@ -8,9 +8,14 @@ rev = "0.10.0"
 hooks = [
   { id = "uv-sync", priority = 0 },
   { id = "uv-lock", alias = "lock", priority = 1 },
-  { id = "uv-lock", name = "deps: upgrade via uv sync --upgrade", alias = "deps", args = [
-    "--upgrade"
-  ], stages = ["manual"], priority = 2 }
+  {
+    id = "uv-lock",
+    name = "deps: upgrade via uv sync --upgrade",
+    alias = "deps",
+    args = ["--upgrade"],
+    stages = ["manual"],
+    priority = 2
+  }
 ]
 
 [[repos]]
@@ -37,31 +42,35 @@ id = "biome"
 name = "biome"
 language = "system"
 pass_filenames = false
-files = { glob = [
-  "*.js",
-  "*.jsx",
-  "*.ts",
-  "*.tsx",
-  "*.json",
-  "*.css",
-  "*.scss",
-  "*.html",
-  "*.md",
-  "*.yml",
-  "*.yaml",
-  "*.toml",
-  "*.toml.in"
-] }
+files = {
+  glob = [
+    "*.js",
+    "*.jsx",
+    "*.ts",
+    "*.tsx",
+    "*.json",
+    "*.css",
+    "*.scss",
+    "*.html",
+    "*.md",
+    "*.yml",
+    "*.yaml",
+    "*.toml",
+    "*.toml.in"
+  ]
+}
 entry = "npx @biomejs/biome lint --write --unsafe"
 priority = 1
 
 [[repos.hooks]]
 id = "renovate"
 name = "renovate config validator"
-language = "system"
+language = "node"
+language_version = "24"
 pass_filenames = false
-files = { glob = ["renovate.json"] }
-entry = "npx --yes --package renovate -- renovate-config-validator --strict"
+additional_dependencies = ["renovate@latest"]
+files = "(renovate.json|renovate.json5|.renovaterc|.renovaterc.json5|.renovaterc.json)$"
+entry = "env NODE_OPTIONS='--no-warnings --no-deprecation' npx --yes --package renovate@latest -- renovate-config-validator --strict"
 priority = 0
 
 [[repos.hooks]]
@@ -98,11 +107,9 @@ name = "node deps"
 language = "node"
 language_version = "24"
 pass_filenames = false
-files = { glob = [
-  "package.json",
-  "package-lock.json",
-  "yarn.lock",
-  "pnpm-lock.yaml"
-] }
-entry = "bash -c 'npx ncu -u && npm install'"
+files = {
+  glob = ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
+}
+stages = ["manual"]
+entry = "bash -c 'npx ncu && npm install'"
 priority = 4

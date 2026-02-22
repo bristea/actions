@@ -29,8 +29,72 @@ permissions:
   pull-requests: write
 
 jobs:
+  prek:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # we need tags for dynamic versioning
+          show-progress: false
+
+      # needed by our prek system hooks like toml
+      - uses: astral-sh/setup-uv@v7
+
+      # needed by our prek systems hooks like biome
+      - name: Set up Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: "24"
+
+      - name: node install (npm/yarn)
+        run: |
+          test -f yarn.lock  && npx yarn install --immutable
+          test -f package-lock.json && npm install
+
+      - uses: j178/prek-action@v1
+        with:
+          install-only: true
+
+      - name: Run prek and produce patch if needed
+        id: prek
+        env:
+          # For pull_request: PR branch; for push/merge_group: current branch ref name
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -x
+          EXIT_CODE=0
+          prek run --all-files --color=always || EXIT_CODE=$?
+          if [ -n "$(git status --porcelain)" ]; then
+              git config --global user.email ansible-devtools@redhat.com
+              git config --global user.name "Ansible DevTools"
+              git add -A
+              git commit -m 'Prek auto-fixes'
+              git format-patch -1 HEAD --stdout | tee .git/autofix.patch
+              echo "Rerunning prek after auto-fixes to verify their effectiveness"
+              EXIT_CODE=0
+              prek run --all-files --color=always || EXIT_CODE=$?
+              EXIT_CODE=$?
+          fi
+          exit $EXIT_CODE
+
+      - name: Upload artifact autofix-patch if present
+        if: hashFiles('.git/autofix.patch') != ''
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: autofix-patch
+          path: .git/autofix.patch
+          if-no-files-found: error
+          retention-days: "1"
+
+      - name: Fail fast to allow autofix to be applied
+        if: hashFiles('.git/autofix.patch') != ''
+        run: |
+          echo "::error::An auto-fix should be pushed in few seconds."
+          exit 1
+
   tox:
     uses: ansible/team-devtools/.github/workflows/tox.yml@main
+    needs: prek
     secrets: inherit
     with:
       min_python: "3.12"
@@ -43,21 +107,22 @@ jobs:
       platforms: linux,macos
 
   matrix:
+    needs: prek
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Self test 'matrix' action
         uses: ./matrix
 
   upload-artifact:
     name: upload-artifact-${{ matrix.name || matrix.runs-on }}
+    needs: prek
     env:
       # ACTIONS_RUNNER_DEBUG: "true"
       # ACTIONS_STEP_DEBUG: "true"
       # https://docs.github.com/en/actions/learn-github-actions/environment-variables
       # https://devblogs.microsoft.com/commandline/share-environment-vars-between-wsl-and-windows/
-      WSLENV:
-        HOSTNAME:CI:FORCE_COLOR:GITHUB_ACTION:GITHUB_ACTION_PATH/p:GITHUB_ACTION_REPOSITORY:GITHUB_WORKFLOW:GITHUB_WORKSPACE/p:GITHUB_PATH/p:GITHUB_ENV/p:VIRTUAL_ENV/p:SKIP_PODMAN:SKIP_DOCKER:NODE_OPTIONS
+      WSLENV: "HOSTNAME:CI:FORCE_COLOR:GITHUB_ACTION:GITHUB_ACTION_PATH/p: GITHUB_ACTION_REPOSITORY:GITHUB_WORKFLOW:GITHUB_WORKSPACE/p: GITHUB_PATH/p:GITHUB_ENV/p:VIRTUAL_ENV/p:SKIP_PODMAN:SKIP_DOCKER:NODE_OPTIONS"
       # We define a hostname because otherwise the variable might not always be accessible on runners.
       HOSTNAME: gha
     defaults:
@@ -120,8 +185,22 @@ jobs:
       - uses: actions/cache@v5
         if: ${{ runner.os != 'Windows' }}
         with:
-          path: ~/.cache/prek/
-          key: prek-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/.pre-commit-config.yaml', '**/prek.toml') }}
+          path: |
+            ~/.cache/prek/
+            ~/.cache/uv/
+            ~/.npm/
+          key: >-
+            cache-${{ runner.os }}-${{ runner.arch }}-
+            ${{ hashFiles(
+            '**/.pre-commit-config.yaml',
+            '**/package-lock.json',
+            '**/package.json',
+            '**/pnpm-lock.yaml',
+            '**/prek.toml',
+            '**/pyproject.toml',
+            '**/uv.lock',
+            '**/yarn.lock'
+            ) }}
 
       - name: Lint
         if: ${{ runner.os != 'Windows' }}
@@ -331,5 +410,12 @@ jobs:
       - upload-artifact
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Remove test artifacts
+        if: always()
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: |
+            Artifact-*
+            Symlinked-Artifact-*
+            Multi-Path-Artifact-*
+          failOnError: false

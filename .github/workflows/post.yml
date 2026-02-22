@@ -15,15 +15,55 @@ permissions:
   pull-requests: read
   statuses: write
 jobs:
-  sonar:
-    name: >
-      sonar for ${{ github.event.workflow_run.event }} on
-      ${{ github.event.workflow_run.head_branch }}
-    runs-on: ubuntu-latest
-    if: >
-      github.repository == github.event.workflow_run.head_repository.full_name &&
-      github.event.workflow_run.conclusion == 'success'
+  autofix:
+    name: autofix
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
+      - name: Checkout code from triggering run
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_branch }}
+          repository: ${{ github.event.workflow_run.head_repository.full_name }}
+
+      - name: Download artifact autofix-patch
+        uses: actions/download-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        continue-on-error: true
+        with:
+          name: autofix-patch
+          path: autofix.patch
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply patch and push if present
+        env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          PATCH_FILE=$(find autofix.patch -type f -name '*.patch' 2>/dev/null | head -1)
+          if [ -z "$PATCH_FILE" ]; then
+            echo "No autofix patch found, skipping."
+            exit 0
+          fi
+          git config user.email ansible-devtools@redhat.com
+          git config user.name "Ansible DevTools"
+          git am --no-gpg-sign < "$PATCH_FILE" || exit 1
+          git push origin HEAD:"${HEAD_BRANCH}" || {
+            echo "::error::Push failed. Please either allow maintainers to push to your branch (e.g. enable \"Allow edits from maintainers\" on the PR), or run \`prek run -a\` locally and ensure it passes, then push yourself."
+            exit 1
+          }
+  sonar:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Debug
+        run: |
+          cat <<EOF
+          ${{ github.event.workflow_run }}
+          EOF
+
       - name: Checkout Code
         uses: actions/checkout@v6
         with:
@@ -32,12 +72,20 @@ jobs:
           repository: ${{ github.event.workflow_run.head_repository.full_name }}
 
       - name: Download artifacts (coverage reports)
+        id: download-coverage
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          pattern: logs-*.zip
-          path: .
+          name: logs.zip
+          path: .git/coverage
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail if no coverage reports are found
+        run: |
+          if ! find . -name 'coverage.xml' -print -quit | grep -q .; then
+            echo "::error::No coverage.xml found. Sonar expects coverage (sonar.python.coverage.reportPaths=**/coverage.xml)."
+            exit 1
+          fi
 
       - name: Get PR context
         # Source: https://github.com/orgs/community/discussions/25220#discussioncomment-11316244
@@ -60,9 +108,6 @@ jobs:
           gh pr view --repo "${PR_TARGET_REPO}" "${PR_BRANCH}" \
               --json 'number,baseRefName' --jq '"number=\(.number)\nbase_ref=\(.baseRefName)"' \
               >> "${GITHUB_OUTPUT}"
-          cat <<EOF
-          ${{ github.event.workflow_run }}
-          EOF
 
       - name: SonarCloud scan
         # Coverage processing if js map files are not present so we cannot do
